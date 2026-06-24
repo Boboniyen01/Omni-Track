@@ -455,7 +455,7 @@
         </div>
     </nav>
 
-    <script>
+  <script>
         // 🔒 GLOBAL BLUETOOTH CONFIGURATION ATTRIBUTES
         const SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
         const TELEMETRY_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
@@ -465,6 +465,7 @@
         let settingsCharacteristic = null;
         let bleDevice = null;
         let initialLoad = true;
+        let isConnecting = false; // 🛡️ Execution guard to prevent parallel click collisions
 
         // 🧭 NAVIGATION TAB SWITCHER SYSTEM
         function switchTab(e, tabId) {
@@ -482,34 +483,61 @@
         // 🔌 WEB BLUETOOTH LAYER INTERACTION
         document.addEventListener("DOMContentLoaded", () => {
             const connectTarget = document.getElementById('radar-activation-card');
+            
             if(connectTarget) {
                 connectTarget.style.cursor = 'pointer';
-                connectTarget.addEventListener('click', () => {
+                connectTarget.addEventListener('click', (e) => {
+                    // 🛑 Halt bubble propagation to prevent double execution cycles
+                    e.preventDefault();
+                    e.stopPropagation();
+
+                    if (isConnecting) return; // Ignore input if already connecting
+
                     if (!bleDevice || !bleDevice.gatt.connected) {
                         initializeBLEConnection();
                     }
                 });
             }
+
+            // 🎛️ AUTOMATICALLY BIND SLIDER INTERFACES SAFELY
+            const slider = document.getElementById("threshSlider");
+            if (slider) {
+                // Smooth visual updating on-screen while dragging
+                slider.addEventListener("input", (e) => {
+                    updateSliderLabel(e.target.value);
+                });
+
+                // Transmit BLE packet ONLY when user releases the slider (Prevents ESP32 Buffer Bloat)
+                slider.addEventListener("change", (e) => {
+                    saveThresholdBackend(e.target.value);
+                });
+            }
         });
 
         async function initializeBLEConnection() {
+            if (isConnecting) return;
+            isConnecting = true;
+
             try {
                 document.getElementById("connection-status").innerText = "SEARCHING...";
                 document.getElementById("connection-status").style.color = "var(--text-muted)";
                 
                 bleDevice = await navigator.bluetooth.requestDevice({
-                    filters: [{ services: [SERVICE_UUID] }]
+                    filters: [{ services: [SERVICE_UUID] }],
+                    optionalServices: [SERVICE_UUID] // Explicit validation for characteristic nodes
                 });
 
                 // ✅ REGISTER DISCONNECTION LISTENER BEFORE INITIALIZING GATT CONNECT
                 bleDevice.addEventListener('gattserverdisconnected', handleDisconnectionState);
 
+                console.log("Establishing link layer gateway...");
                 const server = await bleDevice.gatt.connect();
                 const service = await server.getPrimaryService(SERVICE_UUID);
                 
                 telemetryCharacteristic = await service.getCharacteristic(TELEMETRY_UUID);
                 settingsCharacteristic = await service.getCharacteristic(SETTINGS_UUID);
 
+                // Open data notifications pipeline
                 await telemetryCharacteristic.startNotifications();
                 telemetryCharacteristic.addEventListener('characteristicvaluechanged', processIncomingTelemetry);
                 
@@ -518,8 +546,18 @@
                 document.getElementById("connection-status").style.color = "#00ff88";
             } catch (error) {
                 console.error("Web Bluetooth Initialization Fault:", error);
-                document.getElementById("connection-status").innerText = "LINK FAILED";
-                document.getElementById("connection-status").style.color = "var(--alert-red)";
+                
+                // Only throw an alert state error if the user didn't intentionally cancel the pairing popup
+                if (error.name !== 'NotFoundError') {
+                    document.getElementById("connection-status").innerText = "LINK FAILED";
+                    document.getElementById("connection-status").style.color = "var(--alert-red)";
+                } else {
+                    // Gracefully fall back to initialization posture if box was closed
+                    document.getElementById("connection-status").innerText = "TAP CARD TO LINK";
+                    document.getElementById("connection-status").style.color = "var(--text-muted)";
+                }
+            } finally {
+                isConnecting = false; // Release execution lock completely
             }
         }
 
@@ -530,7 +568,9 @@
             // Revert State Tracking Variables
             telemetryCharacteristic = null;
             settingsCharacteristic = null;
+            bleDevice = null;
             initialLoad = true;
+            isConnecting = false;
 
             // Purge UI Values back to Safe Defaults
             document.body.classList.remove("alarm-active");
@@ -541,10 +581,15 @@
             document.getElementById("rssi-val").innerText = "DISCONNECTED";
             document.getElementById("perimeter-lbl").innerText = "0.0m";
             
-            document.getElementById("batt-text").childNodes[0].textContent = "0% ";
+            if (document.getElementById("batt-text") && document.getElementById("batt-text").childNodes[0]) {
+                document.getElementById("batt-text").childNodes[0].textContent = "0% ";
+            }
+            
             let fill = document.getElementById("batt-pill-fill");
-            fill.className = "battery-level";
-            fill.style.width = "0%";
+            if (fill) {
+                fill.className = "battery-level";
+                fill.style.width = "0%";
+            }
 
             document.getElementById("power-state").innerText = "DEVICE OFFLINE";
             document.getElementById("power-state").style.color = "var(--text-muted)";
@@ -562,8 +607,12 @@
                 document.getElementById("rssi-val").innerText = data.rssi + " dBm";
                 document.getElementById("perimeter-lbl").innerText = data.threshold.toFixed(1) + "m";
                 
+                // Sync slider position with what the hardware actually reports on first boot
                 if (initialLoad) {
-                    document.getElementById("threshSlider").value = data.threshold;
+                    const slider = document.getElementById("threshSlider");
+                    if (slider) {
+                        slider.value = data.threshold;
+                    }
                     updateSliderLabel(data.threshold);
                     initialLoad = false;
                 }
@@ -582,21 +631,25 @@
                 }
 
                 // Battery UI Processing Engine
-                document.getElementById("batt-text").childNodes[0].textContent = data.battery + "% ";
+                if (document.getElementById("batt-text") && document.getElementById("batt-text").childNodes[0]) {
+                    document.getElementById("batt-text").childNodes[0].textContent = data.battery + "% ";
+                }
+                
                 let fill = document.getElementById("batt-pill-fill");
-
-                if(data.charging === 1) {
-                    document.getElementById("power-state").innerText = "CHARGING ACTIVE"; 
-                    document.getElementById("power-state").style.color = "#00ff88";
-                    fill.className = "battery-level charging-flash";
-                    fill.style.width = "100%";
-                } else {
-                    fill.className = "battery-level";
-                    fill.style.width = data.battery + "%";
-                    fill.style.backgroundColor = (data.battery <= 20) ? "var(--alert-red)" : "var(--accent-color)";
-                    
-                    document.getElementById("power-state").innerText = (data.battery <= 20) ? "LOW BATTERY WARNING" : "DISCHARGING ON BATTERY";
-                    document.getElementById("power-state").style.color = (data.battery <= 20) ? "var(--alert-red)" : "#ffffff";
+                if (fill) {
+                    if (data.charging === 1) {
+                        document.getElementById("power-state").innerText = "CHARGING ACTIVE"; 
+                        document.getElementById("power-state").style.color = "#00ff88";
+                        fill.className = "battery-level charging-flash";
+                        fill.style.width = "100%";
+                    } else {
+                        fill.className = "battery-level";
+                        fill.style.width = data.battery + "%";
+                        fill.style.backgroundColor = (data.battery <= 20) ? "var(--alert-red)" : "var(--accent-color)";
+                        
+                        document.getElementById("power-state").innerText = (data.battery <= 20) ? "LOW BATTERY WARNING" : "DISCHARGING ON BATTERY";
+                        document.getElementById("power-state").style.color = (data.battery <= 20) ? "var(--alert-red)" : "#ffffff";
+                    }
                 }
             } catch (err) { 
                 console.error("Payload Extraction Error:", err);
@@ -610,12 +663,14 @@
                     const payload = JSON.stringify({ limit: parseFloat(val) });
                     const encoder = new TextEncoder();
                     await settingsCharacteristic.writeValue(encoder.encode(payload));
+                    
+                    console.log(`Dispatched threshold adjustment payload over-the-air: ${payload}`);
                     document.getElementById("perimeter-lbl").innerText = parseFloat(val).toFixed(1) + "m";
                 } catch (error) {
                     console.error("Configuration Parameter Sync Dropped:", error);
                 }
             }
         }
-    </script>
+</script>
 </body>
 </html>
