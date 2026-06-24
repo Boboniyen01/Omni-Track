@@ -116,7 +116,7 @@
 
         .centered-layout .card {
             width: 100%;
-            max-width: 440px; /* Golden standard width for elegant dashboard cards */
+            max-width: 440px; 
         }
         
         .card { 
@@ -373,7 +373,7 @@
 
     <header>
         <div class="header-container">
-            <div class="logo-box"><span class="heartbeat"></span> OMNITRACK</div>
+            <div class="logo-box"><span class="heartbeat" id="system-heartbeat"></span> OMNITRACK</div>
             <div id="connection-status">TAP CARD TO LINK</div>
         </div>
     </header>
@@ -456,6 +456,11 @@
     </nav>
 
     <script>
+        // 🔒 GLOBAL BLUETOOTH CONFIGURATION ATTRIBUTES
+        const SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
+        const TELEMETRY_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
+        const SETTINGS_UUID = "cba1d001-cc4b-4a4a-9b32-e07361b26a8";
+
         let telemetryCharacteristic = null;
         let settingsCharacteristic = null;
         let bleDevice = null;
@@ -488,15 +493,16 @@
         });
 
         async function initializeBLEConnection() {
-            const SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
-            const TELEMETRY_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
-            const SETTINGS_UUID = "cba1d001-cc4b-4a4a-9b32-e07361b26a8";
-
             try {
                 document.getElementById("connection-status").innerText = "SEARCHING...";
+                document.getElementById("connection-status").style.color = "var(--text-muted)";
+                
                 bleDevice = await navigator.bluetooth.requestDevice({
                     filters: [{ services: [SERVICE_UUID] }]
                 });
+
+                // ✅ REGISTER DISCONNECTION LISTENER BEFORE INITIALIZING GATT CONNECT
+                bleDevice.addEventListener('gattserverdisconnected', handleDisconnectionState);
 
                 const server = await bleDevice.gatt.connect();
                 const service = await server.getPrimaryService(SERVICE_UUID);
@@ -507,13 +513,41 @@
                 await telemetryCharacteristic.startNotifications();
                 telemetryCharacteristic.addEventListener('characteristicvaluechanged', processIncomingTelemetry);
                 
-                document.getElementById("connection-status").innerText = "SECURE LINK";
+                // Dynamic identity recognition
+                document.getElementById("connection-status").innerText = `CONNECTED: ${bleDevice.name.toUpperCase()}`;
                 document.getElementById("connection-status").style.color = "#00ff88";
             } catch (error) {
                 console.error("Web Bluetooth Initialization Fault:", error);
                 document.getElementById("connection-status").innerText = "LINK FAILED";
                 document.getElementById("connection-status").style.color = "var(--alert-red)";
             }
+        }
+
+        // 🛑 ✅ NATIVE DISCONNECTION HANDLER (CRITICAL FOR PRODUCTION)
+        function handleDisconnectionState() {
+            console.warn("Link layer disconnected from the hardware node.");
+            
+            // Revert State Tracking Variables
+            telemetryCharacteristic = null;
+            settingsCharacteristic = null;
+            initialLoad = true;
+
+            // Purge UI Values back to Safe Defaults
+            document.body.classList.remove("alarm-active");
+            document.getElementById("connection-status").innerText = "TAP CARD TO LINK";
+            document.getElementById("connection-status").style.color = "var(--text-muted)";
+            
+            document.getElementById("dist-val").innerText = "---";
+            document.getElementById("rssi-val").innerText = "DISCONNECTED";
+            document.getElementById("perimeter-lbl").innerText = "0.0m";
+            
+            document.getElementById("batt-text").childNodes[0].textContent = "0% ";
+            let fill = document.getElementById("batt-pill-fill");
+            fill.className = "battery-level";
+            fill.style.width = "0%";
+
+            document.getElementById("power-state").innerText = "DEVICE OFFLINE";
+            document.getElementById("power-state").style.color = "var(--text-muted)";
         }
 
         // 📊 LIVE INCOMING TELEMETRY PIPE
@@ -541,8 +575,10 @@
                     document.getElementById("connection-status").style.color = "var(--alert-red)";
                 } else {
                     document.body.classList.remove("alarm-active");
-                    document.getElementById("connection-status").innerText = "SECURE LINK";
-                    document.getElementById("connection-status").style.color = "#8e8e9c";
+                    if(bleDevice && bleDevice.gatt.connected) {
+                        document.getElementById("connection-status").innerText = `CONNECTED: ${bleDevice.name.toUpperCase()}`;
+                        document.getElementById("connection-status").style.color = "#00ff88";
+                    }
                 }
 
                 // Battery UI Processing Engine
