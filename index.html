@@ -455,17 +455,19 @@
         </div>
     </nav>
 
-  <script>
+ <script>
         // 🔒 GLOBAL BLUETOOTH CONFIGURATION ATTRIBUTES
         const SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
         const TELEMETRY_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
-        const SETTINGS_UUID = "cba1d001-cc4b-4a4a-9b32-e07361b26a8";
+        
+        // ⚠️ CRITICAL: Ensure this matches your ESP32 code exactly! (Check for the missing character)
+        const SETTINGS_UUID = "cba1d001-cc4b-4a4a-9b32-e07361b26a8"; 
 
         let telemetryCharacteristic = null;
         let settingsCharacteristic = null;
         let bleDevice = null;
         let initialLoad = true;
-        let isConnecting = false; // 🛡️ Execution guard to prevent parallel click collisions
+        let isConnecting = false; 
 
         // 🧭 NAVIGATION TAB SWITCHER SYSTEM
         function switchTab(e, tabId) {
@@ -487,11 +489,10 @@
             if(connectTarget) {
                 connectTarget.style.cursor = 'pointer';
                 connectTarget.addEventListener('click', (e) => {
-                    // 🛑 Halt bubble propagation to prevent double execution cycles
                     e.preventDefault();
                     e.stopPropagation();
 
-                    if (isConnecting) return; // Ignore input if already connecting
+                    if (isConnecting) return; 
 
                     if (!bleDevice || !bleDevice.gatt.connected) {
                         initializeBLEConnection();
@@ -499,15 +500,12 @@
                 });
             }
 
-            // 🎛️ AUTOMATICALLY BIND SLIDER INTERFACES SAFELY
             const slider = document.getElementById("threshSlider");
             if (slider) {
-                // Smooth visual updating on-screen while dragging
                 slider.addEventListener("input", (e) => {
                     updateSliderLabel(e.target.value);
                 });
 
-                // Transmit BLE packet ONLY when user releases the slider (Prevents ESP32 Buffer Bloat)
                 slider.addEventListener("change", (e) => {
                     saveThresholdBackend(e.target.value);
                 });
@@ -524,55 +522,60 @@
                 
                 bleDevice = await navigator.bluetooth.requestDevice({
                     filters: [{ services: [SERVICE_UUID] }],
-                    optionalServices: [SERVICE_UUID] // Explicit validation for characteristic nodes
+                    optionalServices: [SERVICE_UUID] 
                 });
 
-                // ✅ REGISTER DISCONNECTION LISTENER BEFORE INITIALIZING GATT CONNECT
                 bleDevice.addEventListener('gattserverdisconnected', handleDisconnectionState);
 
-                console.log("Establishing link layer gateway...");
+                console.log("Connecting to GATT Server...");
                 const server = await bleDevice.gatt.connect();
+                
+                console.log("Locating primary profile service...");
                 const service = await server.getPrimaryService(SERVICE_UUID);
                 
+                console.log("Binding telemetry characteristic...");
                 telemetryCharacteristic = await service.getCharacteristic(TELEMETRY_UUID);
+                
+                console.log("Binding configurations characteristic...");
+                // 💥 If your code crashes, check your browser console tool to read this exact checkpoint!
                 settingsCharacteristic = await service.getCharacteristic(SETTINGS_UUID);
 
-                // Open data notifications pipeline
+                console.log("Initializing telemetry notification pipeline...");
                 await telemetryCharacteristic.startNotifications();
                 telemetryCharacteristic.addEventListener('characteristicvaluechanged', processIncomingTelemetry);
                 
-                // Dynamic identity recognition
                 document.getElementById("connection-status").innerText = `CONNECTED: ${bleDevice.name.toUpperCase()}`;
                 document.getElementById("connection-status").style.color = "#00ff88";
             } catch (error) {
-                console.error("Web Bluetooth Initialization Fault:", error);
+                console.error("🎯 Web Bluetooth System Fault:", error);
                 
-                // Only throw an alert state error if the user didn't intentionally cancel the pairing popup
+                // 🛡️ SELF-HEALING FAILSAFE: Clean up ghost link connections on crash
+                if (bleDevice && bleDevice.gatt.connected) {
+                    console.warn("Cleaning up failed initialization connection structure...");
+                    bleDevice.gatt.disconnect();
+                }
+
                 if (error.name !== 'NotFoundError') {
                     document.getElementById("connection-status").innerText = "LINK FAILED";
                     document.getElementById("connection-status").style.color = "var(--alert-red)";
                 } else {
-                    // Gracefully fall back to initialization posture if box was closed
                     document.getElementById("connection-status").innerText = "TAP CARD TO LINK";
                     document.getElementById("connection-status").style.color = "var(--text-muted)";
                 }
             } finally {
-                isConnecting = false; // Release execution lock completely
+                isConnecting = false; 
             }
         }
 
-        // 🛑 ✅ NATIVE DISCONNECTION HANDLER (CRITICAL FOR PRODUCTION)
         function handleDisconnectionState() {
             console.warn("Link layer disconnected from the hardware node.");
             
-            // Revert State Tracking Variables
             telemetryCharacteristic = null;
             settingsCharacteristic = null;
             bleDevice = null;
             initialLoad = true;
             isConnecting = false;
 
-            // Purge UI Values back to Safe Defaults
             document.body.classList.remove("alarm-active");
             document.getElementById("connection-status").innerText = "TAP CARD TO LINK";
             document.getElementById("connection-status").style.color = "var(--text-muted)";
@@ -595,19 +598,16 @@
             document.getElementById("power-state").style.color = "var(--text-muted)";
         }
 
-        // 📊 LIVE INCOMING TELEMETRY PIPE
         function processIncomingTelemetry(event) {
             try {
                 const decoder = new TextDecoder('utf-8');
                 const jsonPayload = decoder.decode(event.target.value);
                 const data = JSON.parse(jsonPayload);
 
-                // Update UI data frames
                 document.getElementById("dist-val").innerText = data.distance.toFixed(1);
                 document.getElementById("rssi-val").innerText = data.rssi + " dBm";
                 document.getElementById("perimeter-lbl").innerText = data.threshold.toFixed(1) + "m";
                 
-                // Sync slider position with what the hardware actually reports on first boot
                 if (initialLoad) {
                     const slider = document.getElementById("threshSlider");
                     if (slider) {
@@ -617,7 +617,6 @@
                     initialLoad = false;
                 }
                 
-                // Hardware Protection Warning Engine
                 if (data.distance > data.threshold && data.rssi !== -100) {
                     document.body.classList.add("alarm-active");
                     document.getElementById("connection-status").innerText = "CRITICAL: PERIMETER BREACH"; 
@@ -630,7 +629,6 @@
                     }
                 }
 
-                // Battery UI Processing Engine
                 if (document.getElementById("batt-text") && document.getElementById("batt-text").childNodes[0]) {
                     document.getElementById("batt-text").childNodes[0].textContent = data.battery + "% ";
                 }
@@ -656,7 +654,6 @@
             }
         }
 
-        // 🎛️ PIPE RADIAL SLIDER VALUES OVER THE AIR
         async function saveThresholdBackend(val) {
             if (settingsCharacteristic && bleDevice && bleDevice.gatt.connected) {
                 try {
@@ -664,7 +661,7 @@
                     const encoder = new TextEncoder();
                     await settingsCharacteristic.writeValue(encoder.encode(payload));
                     
-                    console.log(`Dispatched threshold adjustment payload over-the-air: ${payload}`);
+                    console.log(`Dispatched adjustment: ${payload}`);
                     document.getElementById("perimeter-lbl").innerText = parseFloat(val).toFixed(1) + "m";
                 } catch (error) {
                     console.error("Configuration Parameter Sync Dropped:", error);
